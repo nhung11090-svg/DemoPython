@@ -424,8 +424,8 @@ export async function startServer() {
   });
 }
 
-// Start server if run directly
-if (process.env.NODE_ENV !== "test") {
+// Start server if run directly (skip if in serverless environment)
+if (process.env.NODE_ENV !== "test" && !process.env.VERCEL) {
   startServer();
 }
 
