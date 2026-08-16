@@ -1,0 +1,6 @@
+{
+  "name": "🐍 HÀNH TRÌNH PYTHON",
+  "description": "Webapp trò chơi học Python cho học sinh lớp 8: Giải mã – Suy luận – Săn lỗi – Chinh phục Python với 200 câu hỏi và 5 đấu trường hấp dẫn.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
