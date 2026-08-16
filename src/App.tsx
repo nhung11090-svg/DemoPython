@@ -3,6 +3,7 @@ import { StudentLayout } from './layouts/StudentLayout';
 import { TeacherLayout } from './layouts/TeacherLayout';
 import { TeacherLogin } from './components/teacher/TeacherLogin';
 import { TeacherUser } from './types';
+import { teacherFetch, clearTeacherAuthToken } from './lib/teacherApi';
 
 export function App() {
   const [currentPath, setCurrentPath] = useState<string>(() => window.location.pathname || '/');
@@ -41,13 +42,7 @@ export function App() {
       }
 
       try {
-        const token = localStorage.getItem('pythonQuestTeacherToken');
-        const headers: Record<string, string> = {};
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`;
-        }
-
-        const res = await fetch('/api/teacher/me', { headers });
+        const res = await teacherFetch('/api/teacher/me');
         if (res.ok) {
           const data = await res.json();
           if (data.authenticated && data.user) {
@@ -87,21 +82,12 @@ export function App() {
   // Handle Teacher Logout
   const handleTeacherLogout = async () => {
     try {
-      const token = localStorage.getItem('pythonQuestTeacherToken');
-      const headers: Record<string, string> = {};
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-      await fetch('/api/teacher/logout', {
+      await teacherFetch('/api/teacher/logout', {
         method: 'POST',
-        headers,
       });
     } catch {}
 
-    try {
-      localStorage.removeItem('pythonQuestTeacherToken');
-    } catch {}
-
+    clearTeacherAuthToken();
     setTeacherUser(null);
     navigate('/teacher/login');
   };

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { TeacherDashboardStats } from '../../types';
+import { teacherFetch } from '../../lib/teacherApi';
 import {
   Users,
   CheckCircle2,
@@ -26,7 +27,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onNavigateTa
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/teacher/statistics');
+      const res = await teacherFetch('/api/teacher/statistics');
       if (!res.ok) {
         throw new Error('Chưa đăng nhập hoặc phiên làm việc đã hết hạn');
       }

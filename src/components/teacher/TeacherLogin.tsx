@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Lock, User, KeyRound, ShieldCheck, AlertCircle, ArrowRight, Sparkles } from 'lucide-react';
 import { TeacherUser } from '../../types';
+import { setTeacherAuthToken } from '../../lib/teacherApi';
 
 interface TeacherLoginProps {
   onLoginSuccess: (user: TeacherUser) => void;
@@ -27,7 +28,7 @@ export const TeacherLogin: React.FC<TeacherLoginProps> = ({ onLoginSuccess }) =>
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          username: username.trim() || 'Giáo viên',
+          username: username.trim() || 'giaovien',
           password: password.trim(),
         }),
       });
@@ -40,11 +41,9 @@ export const TeacherLogin: React.FC<TeacherLoginProps> = ({ onLoginSuccess }) =>
         return;
       }
 
-      // Save teacher token to localStorage if needed as backup for auth headers
+      // Save teacher token to localStorage for persistent auth
       if (data.token) {
-        try {
-          localStorage.setItem('pythonQuestTeacherToken', data.token);
-        } catch {}
+        setTeacherAuthToken(data.token);
       }
 
       onLoginSuccess(data.user);

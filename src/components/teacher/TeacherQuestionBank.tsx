@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Question, GameId } from '../../types';
 import { CodeBlock } from '../CodeBlock';
+import { teacherFetch } from '../../lib/teacherApi';
 import {
   BookOpen,
   Search,
@@ -25,7 +26,7 @@ export const TeacherQuestionBank: React.FC = () => {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/teacher/questions');
+      const res = await teacherFetch('/api/teacher/questions');
       if (!res.ok) {
         throw new Error('Chưa đăng nhập hoặc phiên làm việc đã hết hạn');
       }

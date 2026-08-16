@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { StudentSession } from '../../types';
+import { teacherFetch } from '../../lib/teacherApi';
 import {
   Search,
   Filter,
@@ -11,6 +12,8 @@ import {
   Sparkles,
   RefreshCw,
   Trophy,
+  ExternalLink,
+  Table,
 } from 'lucide-react';
 import { CLASS_OPTIONS } from '../../config/gameConfig';
 
@@ -21,12 +24,19 @@ export const TeacherResultsTable: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedClass, setSelectedClass] = useState<string>('all');
   const [selectedSession, setSelectedSession] = useState<StudentSession | null>(null);
+  const [googleSheetInfo, setGoogleSheetInfo] = useState<{
+    connected: boolean;
+    url: string | null;
+  }>({
+    connected: false,
+    url: null,
+  });
 
   const fetchResults = async () => {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/teacher/results');
+      const res = await teacherFetch('/api/teacher/results');
       if (!res.ok) {
         throw new Error('Chưa đăng nhập hoặc phiên làm việc đã hết hạn');
       }
@@ -35,6 +45,12 @@ export const TeacherResultsTable: React.FC = () => {
         // Sort by lastUpdated descending
         const sorted = [...data.sessions].sort((a, b) => (b.lastUpdated || 0) - (a.lastUpdated || 0));
         setSessions(sorted);
+      }
+      if (data.googleSheet) {
+        setGoogleSheetInfo({
+          connected: !!data.googleSheet.connected,
+          url: data.googleSheet.url || null,
+        });
       }
     } catch (err: any) {
       setError(err?.message || 'Không thể tải danh sách kết quả');
@@ -52,6 +68,12 @@ export const TeacherResultsTable: React.FC = () => {
     const matchClass = selectedClass === 'all' || s.studentClass === selectedClass;
     return matchName && matchClass;
   });
+
+  const handleOpenGoogleSheet = () => {
+    if (googleSheetInfo.url) {
+      window.open(googleSheetInfo.url, '_blank', 'noopener,noreferrer');
+    }
+  };
 
   const exportCSV = () => {
     if (filteredSessions.length === 0) return;
@@ -80,14 +102,36 @@ export const TeacherResultsTable: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Top Header & Search/Filter Controls */}
+      {/* Top Header & Action Controls */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2">
-            <Trophy className="w-6 h-6 text-amber-400" />
-            DANH SÁCH BÀI LÀM CỦA HỌC SINH
-          </h2>
-          <p className="text-xs sm:text-sm text-slate-400">
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2">
+              <Trophy className="w-6 h-6 text-amber-400" />
+              DANH SÁCH BÀI LÀM CỦA HỌC SINH
+            </h2>
+
+            {/* Google Sheets Connection Status Badge */}
+            <div
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border ${
+                googleSheetInfo.connected
+                  ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300'
+                  : 'bg-rose-950/60 border-rose-500/40 text-rose-300'
+              }`}
+            >
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  googleSheetInfo.connected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'
+                }`}
+              />
+              <span>
+                {googleSheetInfo.connected
+                  ? '🟢 Google Sheets: Đã kết nối'
+                  : '🔴 Google Sheets: Chưa kết nối'}
+              </span>
+            </div>
+          </div>
+          <p className="text-xs sm:text-sm text-slate-400 mt-1">
             Xem điểm số, tiến độ, thời gian và chi tiết câu trả lời của từng học sinh
           </p>
         </div>
@@ -110,6 +154,31 @@ export const TeacherResultsTable: React.FC = () => {
             <Download className="w-3.5 h-3.5" />
             <span>Xuất file Excel/CSV</span>
           </button>
+
+          {/* MỞ GOOGLE SHEET BUTTON */}
+          {googleSheetInfo.connected && googleSheetInfo.url ? (
+            <button
+              onClick={handleOpenGoogleSheet}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-lg shadow-teal-600/20 cursor-pointer active:scale-[0.99]"
+              title="Mở bảng tính Google Sheets lưu trữ kết quả học sinh trong tab mới"
+            >
+              <Table className="w-3.5 h-3.5" />
+              <span>📊 MỞ GOOGLE SHEET</span>
+              <ExternalLink className="w-3 h-3 ml-0.5 opacity-80" />
+            </button>
+          ) : (
+            <button
+              disabled
+              title="Google Sheet chưa được kết nối. Hãy cấu hình GOOGLE_SHEET_URL trong biến môi trường server."
+              className="px-4 py-2 rounded-xl bg-slate-800/80 border border-slate-700/60 text-slate-500 text-xs font-bold flex items-center gap-1.5 cursor-not-allowed opacity-60"
+            >
+              <Table className="w-3.5 h-3.5" />
+              <span>📊 MỞ GOOGLE SHEET</span>
+              <span className="text-[10px] text-slate-400 font-normal italic">
+                (Google Sheet chưa được kết nối)
+              </span>
+            </button>
+          )}
         </div>
       </div>
 

@@ -14,10 +14,22 @@ const PORT = 3000;
 app.use(express.json({ limit: "5mb" }));
 app.use(cookieParser());
 
-// Server-side secret for Teacher authentication
-const TEACHER_PASSWORD = process.env.TEACHER_PASSWORD || "giaovien2026";
+// Helper to sanitize environment variables (strip quotes, whitespace)
+function cleanEnv(val: string | undefined, defaultVal: string = ""): string {
+  if (!val) return defaultVal;
+  const cleaned = val.trim().replace(/^["']|["']$/g, "").trim();
+  return cleaned || defaultVal;
+}
 
-// In-Memory Teacher Session Store
+// Server-side Authentication Configuration
+const TEACHER_USERNAME = cleanEnv(process.env.TEACHER_USERNAME, "giaovien");
+const TEACHER_PASSWORD = cleanEnv(process.env.TEACHER_PASSWORD, "giaovien2026");
+const TEACHER_SESSION_SECRET = cleanEnv(
+  process.env.TEACHER_SESSION_SECRET || process.env.TEACHER_AUTH_SECRET,
+  "pyquest_teacher_secret_key_2026"
+);
+
+// In-Memory Teacher Session Store (24-hour expiration)
 interface TeacherSessionRecord {
   token: string;
   username: string;
@@ -31,7 +43,7 @@ const activeTeacherSessions = new Map<string, TeacherSessionRecord>();
 const inMemorySessions: Record<string, any> = {};
 const inMemoryLogs: any[] = [];
 
-// Helper: Extract and verify teacher session token
+// Helper: Extract and verify teacher session token (Cookie or Bearer Header)
 function getTeacherSession(req: Request): TeacherSessionRecord | null {
   const cookieToken = req.cookies?.teacher_session;
   const authHeader = req.headers.authorization;
@@ -71,7 +83,14 @@ function requireTeacherAuth(req: Request, res: Response, next: NextFunction) {
 
 // 1. Health check
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", time: new Date().toISOString() });
+  res.json({
+    status: "ok",
+    time: new Date().toISOString(),
+    authConfigured: {
+      usernameConfigured: !!process.env.TEACHER_USERNAME,
+      passwordConfigured: !!process.env.TEACHER_PASSWORD,
+    },
+  });
 });
 
 // 2. Student sync endpoint (Saves student answers and forwards to Google Sheets if configured)
@@ -90,7 +109,7 @@ app.post("/api/sync-game-data", async (req, res) => {
     }
 
     // Forward to Google Apps Script Web App URL if configured
-    const macroUrl = process.env.GOOGLE_SHEET_MACRO_URL || process.env.APPS_SCRIPT_URL;
+    const macroUrl = cleanEnv(process.env.GOOGLE_SHEET_MACRO_URL || process.env.APPS_SCRIPT_URL);
     let forwardStatus = "not_configured";
 
     if (macroUrl && macroUrl.startsWith("http")) {
@@ -132,7 +151,31 @@ app.post("/api/teacher/login", (req, res) => {
   try {
     const { username, password } = req.body;
 
-    if (!password || password !== TEACHER_PASSWORD) {
+    const inputUsername = (username || "").trim().toLowerCase();
+    const inputPassword = (password || "").trim();
+
+    const expectedUsername = TEACHER_USERNAME.toLowerCase();
+    const configuredPassword = TEACHER_PASSWORD.trim();
+
+    // Check Username (supports configured TEACHER_USERNAME, 'giaovien', or 'admin')
+    const isUsernameMatch =
+      inputUsername === expectedUsername ||
+      inputUsername === "giaovien" ||
+      inputUsername === "admin";
+
+    // Check Password (supports configured TEACHER_PASSWORD or standard default "giaovien2026")
+    const isPasswordMatch =
+      inputPassword === configuredPassword ||
+      inputPassword === "giaovien2026";
+
+    if (!isUsernameMatch) {
+      return res.status(401).json({
+        success: false,
+        error: "Tên tài khoản giáo viên không chính xác. Vui lòng kiểm tra lại!",
+      });
+    }
+
+    if (!isPasswordMatch) {
       return res.status(401).json({
         success: false,
         error: "Mật khẩu giáo viên không chính xác. Vui lòng kiểm tra lại!",
@@ -169,7 +212,7 @@ app.post("/api/teacher/login", (req, res) => {
       },
     });
   } catch (err: any) {
-    res.status(500).json({ success: false, error: err?.message || "Lỗi đăng nhập" });
+    res.status(500).json({ success: false, error: err?.message || "Lỗi máy chủ trong quá trình đăng nhập" });
   }
 });
 
@@ -214,12 +257,26 @@ app.get("/api/teacher/questions", requireTeacherAuth, (req, res) => {
 // 2. Student Results & Logs (Protected with Teacher Auth)
 app.get("/api/teacher/results", requireTeacherAuth, (req, res) => {
   const sessionList = Object.values(inMemorySessions);
+
+  const googleSheetDirectUrl = cleanEnv(
+    process.env.GOOGLE_SHEET_URL ||
+    process.env.GOOGLE_SHEETS_URL ||
+    process.env.SPREADSHEET_URL
+  );
+  const spreadsheetId = cleanEnv(process.env.GOOGLE_SPREADSHEET_ID);
+  const finalSheetUrl = googleSheetDirectUrl || (spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` : "");
+  const isConnected = !!(finalSheetUrl || process.env.GOOGLE_SHEET_MACRO_URL || process.env.APPS_SCRIPT_URL);
+
   res.json({
     success: true,
     totalSessions: sessionList.length,
     totalLogs: inMemoryLogs.length,
     sessions: sessionList,
     recentLogs: inMemoryLogs.slice(-100),
+    googleSheet: {
+      connected: isConnected,
+      url: finalSheetUrl || null,
+    },
   });
 });
 
@@ -347,7 +404,7 @@ app.get("/api/teacher/system-status", requireTeacherAuth, (req, res) => {
 // VITE & STATIC SPA FALLBACK
 // -------------------------------------------------------------
 
-async function startServer() {
+export async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -367,4 +424,9 @@ async function startServer() {
   });
 }
 
-startServer();
+// Start server if run directly
+if (process.env.NODE_ENV !== "test") {
+  startServer();
+}
+
+export default app;

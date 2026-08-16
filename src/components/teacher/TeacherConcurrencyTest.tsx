@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ALL_QUESTIONS } from '../../data';
 import { createInitialSession, generateUUID, selectGameQuestions } from '../../lib/scoring';
 import { StudentSession, AnswerLog, GameId } from '../../types';
+import { teacherFetch } from '../../lib/teacherApi';
 import {
   Activity,
   Play,
@@ -48,7 +49,7 @@ export const TeacherConcurrencyTest: React.FC = () => {
 
   const fetchSystemStatus = async () => {
     try {
-      const res = await fetch('/api/teacher/system-status');
+      const res = await teacherFetch('/api/teacher/system-status');
       if (res.ok) {
         const data = await res.json();
         setSystemTelemetry(data);
