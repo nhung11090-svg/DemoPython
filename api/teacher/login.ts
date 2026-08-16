@@ -1,7 +1,11 @@
-import { TEACHER_USERNAME, TEACHER_PASSWORD, createTeacherSession } from "../_lib/auth.js";
+import {
+  TEACHER_USERNAME,
+  TEACHER_PASSWORD,
+  createTeacherToken,
+  createTeacherCookie,
+} from "../_lib/auth.js";
 
 export default async function handler(req: any, res: any) {
-  // Set CORS and JSON content type
   res.setHeader("Content-Type", "application/json");
 
   if (req.method !== "POST") {
@@ -24,7 +28,7 @@ export default async function handler(req: any, res: any) {
       inputUsername === "giaovien" ||
       inputUsername === "admin";
 
-    // Check Password (supports configured TEACHER_PASSWORD or standard default "giaovien2026")
+    // Check Password (supports configured TEACHER_PASSWORD or default fallback "giaovien2026")
     const isPasswordMatch =
       inputPassword === configuredPassword ||
       inputPassword === "giaovien2026";
@@ -43,20 +47,21 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    const session = createTeacherSession(username?.trim() || "giaovien");
+    // Generate Stateless Signed Token (8 hours valid)
+    const token = createTeacherToken(inputUsername || "giaovien", 8 * 3600);
 
-    // Set Set-Cookie header for standard serverless response
-    const cookieString = `teacher_session=${session.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${
-      process.env.NODE_ENV === "production" ? "; Secure" : ""
-    }`;
-    res.setHeader("Set-Cookie", cookieString);
+    // Attach Set-Cookie
+    const cookieHeader = createTeacherCookie(token, 8 * 3600);
+    res.setHeader("Set-Cookie", cookieHeader);
 
     return res.status(200).json({
       success: true,
-      token: session.token,
+      token,
+      username: inputUsername || "giaovien",
+      role: "teacher",
       user: {
-        username: session.username,
-        role: session.role,
+        username: inputUsername || "giaovien",
+        role: "teacher",
       },
     });
   } catch (err: any) {

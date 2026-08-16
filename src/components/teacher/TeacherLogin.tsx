@@ -27,6 +27,7 @@ export const TeacherLogin: React.FC<TeacherLoginProps> = ({ onLoginSuccess }) =>
       const response = await fetch('/api/teacher/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           username: username.trim() || 'giaovien',
           password: password.trim(),

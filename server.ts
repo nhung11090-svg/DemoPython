@@ -26,25 +26,110 @@ const TEACHER_USERNAME = cleanEnv(process.env.TEACHER_USERNAME, "giaovien");
 const TEACHER_PASSWORD = cleanEnv(process.env.TEACHER_PASSWORD, "giaovien2026");
 const TEACHER_SESSION_SECRET = cleanEnv(
   process.env.TEACHER_SESSION_SECRET || process.env.TEACHER_AUTH_SECRET,
-  "pyquest_teacher_secret_key_2026"
+  "pyquest_teacher_secret_key_2026_stateless_secure_token"
 );
 
-// In-Memory Teacher Session Store (24-hour expiration)
-interface TeacherSessionRecord {
-  token: string;
+export interface TeacherUserPayload {
   username: string;
-  role: "teacher" | "admin";
-  createdAt: number;
-  expiresAt: number;
+  role: "teacher";
+  iat: number;
+  exp: number;
 }
-const activeTeacherSessions = new Map<string, TeacherSessionRecord>();
+
+// Base64URL encode / decode helpers
+function base64UrlEncode(str: string): string {
+  return Buffer.from(str, "utf8")
+    .toString("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+}
+
+function base64UrlDecode(str: string): string {
+  let base64 = str.replace(/-/g, "+").replace(/_/g, "/");
+  while (base64.length % 4) {
+    base64 += "=";
+  }
+  return Buffer.from(base64, "base64").toString("utf8");
+}
+
+function createTeacherToken(username: string, durationSeconds: number = 8 * 3600): string {
+  const header = { alg: "HS256", typ: "JWT" };
+  const now = Math.floor(Date.now() / 1000);
+  const payload: TeacherUserPayload = {
+    username: username || "giaovien",
+    role: "teacher",
+    iat: now,
+    exp: now + durationSeconds,
+  };
+
+  const encodedHeader = base64UrlEncode(JSON.stringify(header));
+  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+  const dataToSign = `${encodedHeader}.${encodedPayload}`;
+
+  const signature = crypto
+    .createHmac("sha256", TEACHER_SESSION_SECRET)
+    .update(dataToSign)
+    .digest("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+
+  return `${dataToSign}.${signature}`;
+}
+
+function verifyTeacherToken(token: string): TeacherUserPayload | null {
+  if (!token || typeof token !== "string") return null;
+
+  const parts = token.trim().split(".");
+  if (parts.length !== 3) return null;
+
+  const [encodedHeader, encodedPayload, signature] = parts;
+  const dataToSign = `${encodedHeader}.${encodedPayload}`;
+
+  const expectedSignature = crypto
+    .createHmac("sha256", TEACHER_SESSION_SECRET)
+    .update(dataToSign)
+    .digest("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+
+  const sigBuffer = Buffer.from(signature);
+  const expectedSigBuffer = Buffer.from(expectedSignature);
+
+  if (sigBuffer.length !== expectedSigBuffer.length) {
+    return null;
+  }
+
+  if (!crypto.timingSafeEqual(sigBuffer, expectedSigBuffer)) {
+    return null;
+  }
+
+  try {
+    const payload: TeacherUserPayload = JSON.parse(base64UrlDecode(encodedPayload));
+    const now = Math.floor(Date.now() / 1000);
+
+    if (!payload.exp || now > payload.exp) {
+      return null;
+    }
+
+    if (payload.role !== "teacher") {
+      return null;
+    }
+
+    return payload;
+  } catch {
+    return null;
+  }
+}
 
 // Ephemeral telemetry for student sessions (keyed strictly by unique sessionId)
 const inMemorySessions: Record<string, any> = {};
 const inMemoryLogs: any[] = [];
 
 // Helper: Extract and verify teacher session token (Cookie or Bearer Header)
-function getTeacherSession(req: Request): TeacherSessionRecord | null {
+function getTeacherSession(req: Request): TeacherUserPayload | null {
   const cookieToken = req.cookies?.teacher_session;
   const authHeader = req.headers.authorization;
   const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
@@ -52,16 +137,7 @@ function getTeacherSession(req: Request): TeacherSessionRecord | null {
   const token = bearerToken || cookieToken;
   if (!token) return null;
 
-  const session = activeTeacherSessions.get(token);
-  if (!session) return null;
-
-  // Check expiration (24h validity)
-  if (Date.now() > session.expiresAt) {
-    activeTeacherSessions.delete(token);
-    return null;
-  }
-
-  return session;
+  return verifyTeacherToken(token);
 }
 
 // Middleware: Strict Teacher Authentication Guard
@@ -182,33 +258,25 @@ app.post("/api/teacher/login", (req, res) => {
       });
     }
 
-    // Generate secure 256-bit session token
-    const token = crypto.randomBytes(32).toString("hex");
-    const expiresAt = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
-    const teacherUser = {
-      token,
-      username: username?.trim() || "Giáo viên",
-      role: "teacher" as const,
-      createdAt: Date.now(),
-      expiresAt,
-    };
-
-    activeTeacherSessions.set(token, teacherUser);
+    // Generate stateless signed token (8 hours valid)
+    const token = createTeacherToken(inputUsername || "giaovien", 8 * 3600);
 
     // Set secure cookie
     res.cookie("teacher_session", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      maxAge: 24 * 60 * 60 * 1000,
+      maxAge: 8 * 60 * 60 * 1000,
     });
 
     res.json({
       success: true,
       token,
+      username: inputUsername || "giaovien",
+      role: "teacher",
       user: {
-        username: teacherUser.username,
-        role: teacherUser.role,
+        username: inputUsername || "giaovien",
+        role: "teacher",
       },
     });
   } catch (err: any) {
@@ -218,11 +286,11 @@ app.post("/api/teacher/login", (req, res) => {
 
 // Teacher Logout
 app.post("/api/teacher/logout", (req, res) => {
-  const token = req.cookies?.teacher_session || (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7).trim() : null);
-  if (token) {
-    activeTeacherSessions.delete(token);
-  }
-  res.clearCookie("teacher_session");
+  res.clearCookie("teacher_session", {
+    path: "/",
+    httpOnly: true,
+    sameSite: "lax",
+  });
   res.json({ success: true, message: "Đã đăng xuất thành công." });
 });
 
@@ -234,6 +302,8 @@ app.get("/api/teacher/me", (req, res) => {
   }
   res.json({
     authenticated: true,
+    username: session.username,
+    role: session.role,
     user: {
       username: session.username,
       role: session.role,

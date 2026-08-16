@@ -34,6 +34,6 @@ export async function teacherFetch(url: string, options: RequestInit = {}): Prom
   return fetch(url, {
     ...options,
     headers,
-    credentials: 'same-origin',
+    credentials: 'include',
   });
 }
