@@ -34,6 +34,7 @@ export default async function handler(req: any, res: any) {
       inputPassword === "giaovien2026";
 
     if (!isUsernameMatch) {
+      console.log(`[TEACHER_LOGIN_FAILED] Invalid username: ${inputUsername}`);
       return res.status(401).json({
         success: false,
         error: "Tên tài khoản giáo viên không chính xác. Vui lòng kiểm tra lại!",
@@ -41,6 +42,7 @@ export default async function handler(req: any, res: any) {
     }
 
     if (!isPasswordMatch) {
+      console.log(`[TEACHER_LOGIN_FAILED] Invalid password for user: ${inputUsername}`);
       return res.status(401).json({
         success: false,
         error: "Mật khẩu giáo viên không chính xác. Vui lòng kiểm tra lại!",
@@ -50,9 +52,12 @@ export default async function handler(req: any, res: any) {
     // Generate Stateless Signed Token (8 hours valid)
     const token = createTeacherToken(inputUsername || "giaovien", 8 * 3600);
 
-    // Attach Set-Cookie
-    const cookieHeader = createTeacherCookie(token, 8 * 3600);
+    // Attach Set-Cookie (Path=/, HttpOnly, SameSite=Lax)
+    const cookieHeader = createTeacherCookie(token, 8 * 3600, req);
     res.setHeader("Set-Cookie", cookieHeader);
+
+    // Safe logging without credentials
+    console.log(`[TEACHER_LOGIN_SUCCESS] username=${inputUsername || "giaovien"}, role=teacher`);
 
     return res.status(200).json({
       success: true,

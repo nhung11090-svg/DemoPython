@@ -1,4 +1,4 @@
-import { verifyTeacherSession, activeTeacherSessions, inMemorySessions, inMemoryLogs } from "../_lib/auth.js";
+import { verifyTeacherSession, inMemorySessions, inMemoryLogs } from "../_lib/auth.js";
 
 export default async function handler(req: any, res: any) {
   res.setHeader("Content-Type", "application/json");
@@ -16,7 +16,6 @@ export default async function handler(req: any, res: any) {
     success: true,
     serverTime: new Date().toISOString(),
     uptimeSeconds: Math.floor(process.uptime()),
-    activeTeacherSessionsCount: activeTeacherSessions.size,
     inMemorySessionsCount: Object.keys(inMemorySessions).length,
     inMemoryLogsCount: inMemoryLogs.length,
     googleSheetSyncConfigured: !!(process.env.GOOGLE_SHEET_MACRO_URL || process.env.APPS_SCRIPT_URL),

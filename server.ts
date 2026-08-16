@@ -134,10 +134,22 @@ function getTeacherSession(req: Request): TeacherUserPayload | null {
   const authHeader = req.headers.authorization;
   const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
 
-  const token = bearerToken || cookieToken;
-  if (!token) return null;
+  console.log(`[TEACHER_COOKIE_RECEIVED] cookiePresent=${!!cookieToken}, bearerPresent=${!!bearerToken}`);
 
-  return verifyTeacherToken(token);
+  const token = bearerToken || cookieToken;
+  if (!token) {
+    console.log(`[TEACHER_TOKEN_VERIFIED] status=no_token_provided`);
+    return null;
+  }
+
+  const payload = verifyTeacherToken(token);
+  if (payload) {
+    console.log(`[TEACHER_TOKEN_VERIFIED] status=valid, username=${payload.username}, role=${payload.role}`);
+  } else {
+    console.log(`[TEACHER_TOKEN_VERIFIED] status=invalid_or_expired`);
+  }
+
+  return payload;
 }
 
 // Middleware: Strict Teacher Authentication Guard
@@ -268,6 +280,8 @@ app.post("/api/teacher/login", (req, res) => {
       sameSite: "lax",
       maxAge: 8 * 60 * 60 * 1000,
     });
+
+    console.log(`[TEACHER_LOGIN_SUCCESS] username=${inputUsername || "giaovien"}, role=teacher`);
 
     res.json({
       success: true,

@@ -122,8 +122,16 @@ export function verifyTeacherToken(token: string): TeacherUserPayload | null {
 // Helper to parse cookies from headers
 export function parseCookies(req: any): Record<string, string> {
   const list: Record<string, string> = {};
-  const cookieHeader = req.headers?.cookie || req.headers?.Cookie;
-  if (!cookieHeader) return list;
+  if (!req) return list;
+
+  if (req.cookies && typeof req.cookies === "object" && Object.keys(req.cookies).length > 0) {
+    return req.cookies;
+  }
+
+  const rawCookie = req.headers?.cookie || req.headers?.Cookie;
+  if (!rawCookie) return list;
+
+  const cookieHeader = Array.isArray(rawCookie) ? rawCookie.join("; ") : String(rawCookie);
 
   cookieHeader.split(";").forEach((cookie: string) => {
     let [name, ...rest] = cookie.split("=");
@@ -138,7 +146,7 @@ export function parseCookies(req: any): Record<string, string> {
 
 // Helper: Extract and verify teacher session token (Cookie or Bearer Header)
 export function verifyTeacherSession(req: any): TeacherUserPayload | null {
-  const cookies = req.cookies || parseCookies(req);
+  const cookies = parseCookies(req);
   const cookieToken = cookies?.teacher_session;
 
   const authHeader = req.headers?.authorization || req.headers?.Authorization;
@@ -147,21 +155,46 @@ export function verifyTeacherSession(req: any): TeacherUserPayload | null {
       ? authHeader.slice(7).trim()
       : null;
 
-  const token = bearerToken || cookieToken;
-  if (!token) return null;
+  // Safe telemetry log
+  console.log(
+    `[TEACHER_COOKIE_RECEIVED] cookiePresent=${!!cookieToken}, bearerPresent=${!!bearerToken}`
+  );
 
-  return verifyTeacherToken(token);
+  const token = bearerToken || cookieToken;
+  if (!token) {
+    console.log(`[TEACHER_TOKEN_VERIFIED] status=no_token_provided`);
+    return null;
+  }
+
+  const payload = verifyTeacherToken(token);
+  if (payload) {
+    console.log(
+      `[TEACHER_TOKEN_VERIFIED] status=valid, username=${payload.username}, role=${payload.role}`
+    );
+  } else {
+    console.log(`[TEACHER_TOKEN_VERIFIED] status=invalid_or_expired`);
+  }
+
+  return payload;
 }
 
 /**
  * Tạo Cookie header string cho Vercel & Express
  */
-export function createTeacherCookie(token: string, maxAgeSeconds: number = 8 * 3600): string {
-  // Always include standard secure flags
-  const isProduction = process.env.NODE_ENV === "production" || process.env.VERCEL === "1";
-  return `teacher_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${
-    isProduction ? "; Secure" : ""
-  }`;
+export function createTeacherCookie(token: string, maxAgeSeconds: number = 8 * 3600, req?: any): string {
+  const isHttps =
+    process.env.NODE_ENV === "production" ||
+    process.env.VERCEL === "1" ||
+    req?.headers?.["x-forwarded-proto"] === "https" ||
+    req?.secure === true;
+
+  const secureFlag = isHttps ? "; Secure" : "";
+  const cookieString = `teacher_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secureFlag}`;
+
+  console.log(
+    `[TEACHER_COOKIE_CREATED] path=/, sameSite=Lax, maxAge=${maxAgeSeconds}, secure=${isHttps}`
+  );
+  return cookieString;
 }
 
 export function createClearCookie(): string {
