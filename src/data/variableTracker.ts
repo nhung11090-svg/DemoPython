@@ -1,4 +1,4 @@
-import { Question } from '../types';
+import type { Question } from '../types.js';
 
 export const VARIABLE_TRACKER_QUESTIONS: Question[] = [
   {

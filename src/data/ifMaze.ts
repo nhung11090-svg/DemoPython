@@ -1,4 +1,4 @@
-import { Question } from '../types';
+import type { Question } from '../types.js';
 
 export const IF_MAZE_QUESTIONS: Question[] = [
   {

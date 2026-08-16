@@ -1,6 +1,6 @@
-import { Question, QuestionOption, StudentSession, GameId, AnswerLog } from '../types';
-import { ALL_QUESTIONS } from '../data';
-import { GAME_CONFIG, BADGES } from '../config/gameConfig';
+import type { Question, QuestionOption, StudentSession, GameId, AnswerLog } from '../types.js';
+import { ALL_QUESTIONS } from '../data/index.js';
+import { GAME_CONFIG, BADGES } from '../config/gameConfig.js';
 
 // Secure UUID generator with fallback
 export function generateUUID(): string {

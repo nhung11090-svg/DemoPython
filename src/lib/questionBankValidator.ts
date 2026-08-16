@@ -1,5 +1,5 @@
-import { ALL_QUESTIONS } from '../data';
-import { Question } from '../types';
+import { ALL_QUESTIONS } from '../data/index.js';
+import type { Question } from '../types.js';
 
 export interface ValidationReport {
   totalQuestions: number;

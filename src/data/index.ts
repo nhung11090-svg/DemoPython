@@ -1,9 +1,9 @@
-import { Question } from '../types';
-import { CODE_PREDICTOR_QUESTIONS } from './codePredictor';
-import { VARIABLE_TRACKER_QUESTIONS } from './variableTracker';
-import { BUG_HUNTER_QUESTIONS } from './bugHunter';
-import { IF_MAZE_QUESTIONS } from './ifMaze';
-import { CODE_BUILDER_QUESTIONS } from './codeBuilder';
+import type { Question } from '../types.js';
+import { CODE_PREDICTOR_QUESTIONS } from './codePredictor.js';
+import { VARIABLE_TRACKER_QUESTIONS } from './variableTracker.js';
+import { BUG_HUNTER_QUESTIONS } from './bugHunter.js';
+import { IF_MAZE_QUESTIONS } from './ifMaze.js';
+import { CODE_BUILDER_QUESTIONS } from './codeBuilder.js';
 
 export const ALL_QUESTIONS: Question[] = [
   ...CODE_PREDICTOR_QUESTIONS,

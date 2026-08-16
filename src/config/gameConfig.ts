@@ -1,4 +1,4 @@
-import { GameId, GameInfo, Badge } from '../types';
+import type { GameId, GameInfo, Badge } from '../types.js';
 
 export const CLASS_OPTIONS = [
   '8A1',
