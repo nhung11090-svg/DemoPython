@@ -15,6 +15,23 @@ export const TEACHER_SESSION_SECRET = cleanEnv(
   "pyquest_teacher_secret_key_2026_stateless_secure_token"
 );
 
+export function getGoogleSheetWebhookUrl(): string {
+  return cleanEnv(
+    process.env.GOOGLE_SHEETS_WEBHOOK_URL ||
+    process.env.GOOGLE_SHEET_MACRO_URL ||
+    process.env.APPS_SCRIPT_URL ||
+    process.env.GOOGLE_SHEETS_URL ||
+    process.env.GOOGLE_SHEET_URL
+  );
+}
+
+export function getGoogleSheetsWebhookSecret(): string {
+  return cleanEnv(
+    process.env.GOOGLE_SHEETS_WEBHOOK_SECRET ||
+    process.env.SHEETS_SECRET
+  );
+}
+
 export interface TeacherUserPayload {
   username: string;
   role: "teacher";
@@ -87,7 +104,6 @@ export function verifyTeacherToken(token: string): TeacherUserPayload | null {
     .replace(/\+/g, "-")
     .replace(/\//g, "_");
 
-  // Timing safe comparison to prevent timing attacks
   const sigBuffer = Buffer.from(signature);
   const expectedSigBuffer = Buffer.from(expectedSignature);
 
@@ -103,12 +119,10 @@ export function verifyTeacherToken(token: string): TeacherUserPayload | null {
     const payload: TeacherUserPayload = JSON.parse(base64UrlDecode(encodedPayload));
     const now = Math.floor(Date.now() / 1000);
 
-    // Check expiration
     if (!payload.exp || now > payload.exp) {
       return null;
     }
 
-    // Check role
     if (payload.role !== "teacher") {
       return null;
     }
@@ -155,7 +169,6 @@ export function verifyTeacherSession(req: any): TeacherUserPayload | null {
       ? authHeader.slice(7).trim()
       : null;
 
-  // Safe telemetry log
   console.log(
     `[TEACHER_COOKIE_RECEIVED] cookiePresent=${!!cookieToken}, bearerPresent=${!!bearerToken}`
   );
@@ -201,7 +214,7 @@ export function createClearCookie(): string {
   return "teacher_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT";
 }
 
-// Ephemeral telemetry for student submissions & live stats
+// In-Memory fallback store
 const globalStore = globalThis as any;
 if (!globalStore.__inMemorySessions) {
   globalStore.__inMemorySessions = {};
@@ -213,6 +226,191 @@ if (!globalStore.__inMemoryLogs) {
 export const inMemorySessions: Record<string, any> = globalStore.__inMemorySessions;
 export const inMemoryLogs: any[] = globalStore.__inMemoryLogs;
 
+/**
+ * Ghi dữ liệu học sinh vào Google Sheets qua Apps Script Web App
+ */
+export async function writeToGoogleSheet(payload: {
+  action?: string;
+  eventId?: string;
+  sessionId: string;
+  session?: any;
+  answers?: any[];
+  secret?: string;
+}): Promise<{ success: boolean; persisted: boolean; error?: string }> {
+  const webhookUrl = getGoogleSheetWebhookUrl();
+  const secret = getGoogleSheetsWebhookSecret();
+
+  // In-memory fallback
+  if (payload.session && payload.sessionId) {
+    inMemorySessions[payload.sessionId] = payload.session;
+  }
+  if (Array.isArray(payload.answers) && payload.answers.length > 0) {
+    payload.answers.forEach((ans: any) => {
+      inMemoryLogs.push({ ...ans, receivedAt: Date.now() });
+    });
+  }
+
+  if (!webhookUrl || !webhookUrl.startsWith("http")) {
+    console.log(`[SHEETS_WRITE_FAILED] reason=no_webhook_url_configured`);
+    return {
+      success: true,
+      persisted: false,
+      error: "GOOGLE_SHEETS_WEBHOOK_URL chưa được cấu hình. Dữ liệu tạm thời được lưu trong bộ nhớ serverless.",
+    };
+  }
+
+  const safeUrlDomain = webhookUrl.split("/")[2] || "google.com";
+  console.log(`[SHEETS_WRITE_START] target=${safeUrlDomain}`);
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s timeout
+
+    const bodyToSend = {
+      action: payload.action || "saveGame",
+      eventId: payload.eventId || "",
+      sessionId: payload.sessionId,
+      session: payload.session,
+      answers: payload.answers || [],
+      secret: secret || undefined,
+    };
+
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(bodyToSend),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errText = `HTTP_${response.status}`;
+      console.log(`[SHEETS_WRITE_FAILED] error=${errText}`);
+      return { success: true, persisted: false, error: errText };
+    }
+
+    const resJson = await response.json().catch(() => ({ status: "unknown" }));
+    const isSuccess = resJson.status === "success" || resJson.success === true;
+
+    if (isSuccess) {
+      console.log(
+        `[SHEETS_WRITE_SUCCESS] sessionId=${payload.sessionId} game=${payload.session?.currentGame || "game"} rows=${payload.answers?.length || 0}`
+      );
+      return { success: true, persisted: true };
+    } else {
+      console.log(`[SHEETS_WRITE_FAILED] error=${resJson.message || "sheet_error"}`);
+      return { success: true, persisted: false, error: resJson.message };
+    }
+  } catch (err: any) {
+    console.log(`[SHEETS_WRITE_FAILED] error=${err?.message || "network_timeout"}`);
+    return { success: true, persisted: false, error: err?.message };
+  }
+}
+
+/**
+ * Đọc dữ liệu học sinh từ Google Sheets cho Teacher Dashboard
+ */
+export async function fetchGoogleSheetData(): Promise<{
+  sessions: any[];
+  answers: any[];
+  source: "sheets" | "memory";
+  totalSessions: number;
+  totalAnswers: number;
+  fetchedAt: string;
+}> {
+  const webhookUrl = getGoogleSheetWebhookUrl();
+
+  // If no sheets URL configured, return inMemory
+  if (!webhookUrl || !webhookUrl.startsWith("http")) {
+    const memSessions = Object.values(inMemorySessions);
+    return {
+      sessions: memSessions,
+      answers: inMemoryLogs,
+      source: "memory",
+      totalSessions: memSessions.length,
+      totalAnswers: inMemoryLogs.length,
+      fetchedAt: new Date().toISOString(),
+    };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+    // Thử đọc qua GET ?action=readData
+    const readUrl = webhookUrl.includes("?")
+      ? `${webhookUrl}&action=readData&_t=${Date.now()}`
+      : `${webhookUrl}?action=readData&_t=${Date.now()}`;
+
+    let response = await fetch(readUrl, {
+      method: "GET",
+      signal: controller.signal,
+    }).catch(() => null);
+
+    // Nếu GET không hỗ trợ hoặc trả về lỗi, thử POST { action: "readData" }
+    if (!response || !response.ok) {
+      const postController = new AbortController();
+      const pTimeout = setTimeout(() => postController.abort(), 10000);
+      response = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "readData" }),
+        signal: postController.signal,
+      }).catch(() => null);
+      clearTimeout(pTimeout);
+    }
+
+    clearTimeout(timeoutId);
+
+    if (response && response.ok) {
+      const data = await response.json();
+      if (data && (data.status === "success" || Array.isArray(data.sessions))) {
+        const sheetSessions: any[] = Array.isArray(data.sessions) ? data.sessions : [];
+        const sheetAnswers: any[] = Array.isArray(data.answers) ? data.answers : [];
+
+        // Hợp nhất dữ liệu Google Sheets với inMemory (ưu tiên bản ghi mới nhất)
+        const sessionMap = new Map<string, any>();
+        sheetSessions.forEach((s) => {
+          if (s.sessionId) sessionMap.set(String(s.sessionId), s);
+        });
+
+        // Ghép các session trong memory nếu có (chưa kịp sync hoặc trong cùng phiên)
+        Object.values(inMemorySessions).forEach((s: any) => {
+          if (s.sessionId && !sessionMap.has(String(s.sessionId))) {
+            sessionMap.set(String(s.sessionId), s);
+          }
+        });
+
+        const mergedSessions = Array.from(sessionMap.values());
+        const mergedAnswers = [...sheetAnswers];
+
+        return {
+          sessions: mergedSessions,
+          answers: mergedAnswers,
+          source: "sheets",
+          totalSessions: mergedSessions.length,
+          totalAnswers: mergedAnswers.length,
+          fetchedAt: data.fetchedAt || new Date().toISOString(),
+        };
+      }
+    }
+  } catch (err: any) {
+    console.log(`[SHEETS_READ_FALLBACK] reason=${err?.message || "error"}`);
+  }
+
+  // Fallback memory
+  const memSessions = Object.values(inMemorySessions);
+  return {
+    sessions: memSessions,
+    answers: inMemoryLogs,
+    source: "memory",
+    totalSessions: memSessions.length,
+    totalAnswers: inMemoryLogs.length,
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
 export function getGoogleSheetConfig() {
   const googleSheetDirectUrl = cleanEnv(
     process.env.GOOGLE_SHEET_URL ||
@@ -220,12 +418,13 @@ export function getGoogleSheetConfig() {
     process.env.SPREADSHEET_URL
   );
   const spreadsheetId = cleanEnv(process.env.GOOGLE_SPREADSHEET_ID);
+  const webhookUrl = getGoogleSheetWebhookUrl();
   const finalSheetUrl = googleSheetDirectUrl || (spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` : "");
-  const isConnected = !!(finalSheetUrl || process.env.GOOGLE_SHEET_MACRO_URL || process.env.APPS_SCRIPT_URL);
+  const isConnected = !!(finalSheetUrl || webhookUrl);
 
   return {
     connected: isConnected,
-    url: finalSheetUrl || null,
+    url: finalSheetUrl || webhookUrl || null,
   };
 }
 

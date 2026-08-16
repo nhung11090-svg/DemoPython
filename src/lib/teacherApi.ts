@@ -1,6 +1,7 @@
 /**
  * Helper for making authenticated requests to Teacher API endpoints
  * Supports both HTTP cookies and Authorization: Bearer <token>
+ * Automatically enforces Cache-Control: no-cache and cache-busting timestamp
  */
 
 export function getTeacherAuthToken(): string | null {
@@ -31,9 +32,20 @@ export async function teacherFetch(url: string, options: RequestInit = {}): Prom
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  return fetch(url, {
+  // Enforce zero cache
+  headers.set('Cache-Control', 'no-cache, no-store, max-age=0');
+  headers.set('Pragma', 'no-cache');
+
+  let finalUrl = url;
+  if (!options.method || options.method.toUpperCase() === 'GET') {
+    const separator = url.includes('?') ? '&' : '?';
+    finalUrl = `${url}${separator}_t=${Date.now()}`;
+  }
+
+  return fetch(finalUrl, {
     ...options,
     headers,
     credentials: 'include',
+    cache: 'no-store',
   });
 }

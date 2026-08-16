@@ -128,6 +128,195 @@ function verifyTeacherToken(token: string): TeacherUserPayload | null {
 const inMemorySessions: Record<string, any> = {};
 const inMemoryLogs: any[] = [];
 
+function getGoogleSheetWebhookUrl(): string {
+  return cleanEnv(
+    process.env.GOOGLE_SHEETS_WEBHOOK_URL ||
+    process.env.GOOGLE_SHEET_MACRO_URL ||
+    process.env.APPS_SCRIPT_URL ||
+    process.env.GOOGLE_SHEETS_URL ||
+    process.env.GOOGLE_SHEET_URL
+  );
+}
+
+function getGoogleSheetsWebhookSecret(): string {
+  return cleanEnv(
+    process.env.GOOGLE_SHEETS_WEBHOOK_SECRET ||
+    process.env.SHEETS_SECRET
+  );
+}
+
+async function writeToGoogleSheet(payload: {
+  action?: string;
+  eventId?: string;
+  sessionId: string;
+  session?: any;
+  answers?: any[];
+  secret?: string;
+}): Promise<{ success: boolean; persisted: boolean; error?: string }> {
+  const webhookUrl = getGoogleSheetWebhookUrl();
+  const secret = getGoogleSheetsWebhookSecret();
+
+  if (payload.session && payload.sessionId) {
+    inMemorySessions[payload.sessionId] = payload.session;
+  }
+  if (Array.isArray(payload.answers) && payload.answers.length > 0) {
+    payload.answers.forEach((ans: any) => {
+      inMemoryLogs.push({ ...ans, receivedAt: Date.now() });
+    });
+  }
+
+  if (!webhookUrl || !webhookUrl.startsWith("http")) {
+    console.log(`[SHEETS_WRITE_FAILED] reason=no_webhook_url_configured`);
+    return {
+      success: true,
+      persisted: false,
+      error: "GOOGLE_SHEETS_WEBHOOK_URL chưa được cấu hình. Dữ liệu lưu trong bộ nhớ tạm.",
+    };
+  }
+
+  const safeUrlDomain = webhookUrl.split("/")[2] || "google.com";
+  console.log(`[SHEETS_WRITE_START] target=${safeUrlDomain}`);
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+    const bodyToSend = {
+      action: payload.action || "saveGame",
+      eventId: payload.eventId || "",
+      sessionId: payload.sessionId,
+      session: payload.session,
+      answers: payload.answers || [],
+      secret: secret || undefined,
+    };
+
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(bodyToSend),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errText = `HTTP_${response.status}`;
+      console.log(`[SHEETS_WRITE_FAILED] error=${errText}`);
+      return { success: true, persisted: false, error: errText };
+    }
+
+    const resJson = await response.json().catch(() => ({ status: "unknown" }));
+    const isSuccess = resJson.status === "success" || resJson.success === true;
+
+    if (isSuccess) {
+      console.log(
+        `[SHEETS_WRITE_SUCCESS] sessionId=${payload.sessionId} game=${payload.session?.currentGame || "game"} rows=${payload.answers?.length || 0}`
+      );
+      return { success: true, persisted: true };
+    } else {
+      console.log(`[SHEETS_WRITE_FAILED] error=${resJson.message || "sheet_error"}`);
+      return { success: true, persisted: false, error: resJson.message };
+    }
+  } catch (err: any) {
+    console.log(`[SHEETS_WRITE_FAILED] error=${err?.message || "network_timeout"}`);
+    return { success: true, persisted: false, error: err?.message };
+  }
+}
+
+async function fetchGoogleSheetData(): Promise<{
+  sessions: any[];
+  answers: any[];
+  source: "sheets" | "memory";
+  totalSessions: number;
+  totalAnswers: number;
+  fetchedAt: string;
+}> {
+  const webhookUrl = getGoogleSheetWebhookUrl();
+
+  if (!webhookUrl || !webhookUrl.startsWith("http")) {
+    const memSessions = Object.values(inMemorySessions);
+    return {
+      sessions: memSessions,
+      answers: inMemoryLogs,
+      source: "memory",
+      totalSessions: memSessions.length,
+      totalAnswers: inMemoryLogs.length,
+      fetchedAt: new Date().toISOString(),
+    };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const readUrl = webhookUrl.includes("?")
+      ? `${webhookUrl}&action=readData&_t=${Date.now()}`
+      : `${webhookUrl}?action=readData&_t=${Date.now()}`;
+
+    let response = await fetch(readUrl, {
+      method: "GET",
+      signal: controller.signal,
+    }).catch(() => null);
+
+    if (!response || !response.ok) {
+      const postController = new AbortController();
+      const pTimeout = setTimeout(() => postController.abort(), 10000);
+      response = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "readData" }),
+        signal: postController.signal,
+      }).catch(() => null);
+      clearTimeout(pTimeout);
+    }
+
+    clearTimeout(timeoutId);
+
+    if (response && response.ok) {
+      const data = await response.json();
+      if (data && (data.status === "success" || Array.isArray(data.sessions))) {
+        const sheetSessions: any[] = Array.isArray(data.sessions) ? data.sessions : [];
+        const sheetAnswers: any[] = Array.isArray(data.answers) ? data.answers : [];
+
+        const sessionMap = new Map<string, any>();
+        sheetSessions.forEach((s) => {
+          if (s.sessionId) sessionMap.set(String(s.sessionId), s);
+        });
+
+        Object.values(inMemorySessions).forEach((s: any) => {
+          if (s.sessionId && !sessionMap.has(String(s.sessionId))) {
+            sessionMap.set(String(s.sessionId), s);
+          }
+        });
+
+        const mergedSessions = Array.from(sessionMap.values());
+        const mergedAnswers = [...sheetAnswers];
+
+        return {
+          sessions: mergedSessions,
+          answers: mergedAnswers,
+          source: "sheets",
+          totalSessions: mergedSessions.length,
+          totalAnswers: mergedAnswers.length,
+          fetchedAt: data.fetchedAt || new Date().toISOString(),
+        };
+      }
+    }
+  } catch (err: any) {
+    console.log(`[SHEETS_READ_FALLBACK] reason=${err?.message || "error"}`);
+  }
+
+  const memSessions = Object.values(inMemorySessions);
+  return {
+    sessions: memSessions,
+    answers: inMemoryLogs,
+    source: "memory",
+    totalSessions: memSessions.length,
+    totalAnswers: inMemoryLogs.length,
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
 // Helper: Extract and verify teacher session token (Cookie or Bearer Header)
 function getTeacherSession(req: Request): TeacherUserPayload | null {
   const cookieToken = req.cookies?.teacher_session;
@@ -181,51 +370,95 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// 2. Student sync endpoint (Saves student answers and forwards to Google Sheets if configured)
+// 2. Student sync endpoint (Saves student answers and persists to Google Sheets)
 app.post("/api/sync-game-data", async (req, res) => {
   try {
-    const { action, eventId, sessionId, session, answers } = req.body;
+    const { action, eventId, sessionId, studentName, className, game, answers, score, total, xp, session } = req.body;
 
-    if (session && session.sessionId) {
-      inMemorySessions[session.sessionId] = session;
-    }
+    const finalSessionId = (sessionId || (session && session.sessionId) || "").trim();
+    const finalStudentName = (studentName || (session && session.studentName) || "").trim();
+    const finalClassName = (className || (session && (session.studentClass || session.className)) || "").trim();
+    const finalGame = (game || (session && session.currentGame) || "").trim();
 
-    if (Array.isArray(answers) && answers.length > 0) {
-      answers.forEach((ans) => {
-        inMemoryLogs.push({ ...ans, receivedAt: Date.now() });
+    if (!finalSessionId) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing required field: sessionId is mandatory.",
       });
     }
 
-    // Forward to Google Apps Script Web App URL if configured
-    const macroUrl = cleanEnv(process.env.GOOGLE_SHEET_MACRO_URL || process.env.APPS_SCRIPT_URL);
-    let forwardStatus = "not_configured";
+    console.log(
+      `[SYNC_GAME_RECEIVED] sessionId=${finalSessionId} student=${finalStudentName || "Anonymous"} class=${finalClassName || "None"} game=${finalGame || "batch"}`
+    );
 
-    if (macroUrl && macroUrl.startsWith("http")) {
-      try {
-        const fetchRes = await fetch(macroUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: action || "saveGame",
-            eventId: eventId || "",
-            sessionId: sessionId || (session && session.sessionId) || "",
-            session,
-            answers,
-          }),
-        });
-        forwardStatus = fetchRes.ok ? "forwarded" : "forward_failed";
-      } catch (err: any) {
-        forwardStatus = `forward_error: ${err?.message || "unknown"}`;
-      }
-    }
+    const sanitizedSession = session
+      ? {
+          sessionId: finalSessionId,
+          studentName: finalStudentName,
+          studentClass: finalClassName,
+          startTime: session.startTime || Date.now(),
+          endTime: session.endTime || undefined,
+          durationSeconds: session.durationSeconds || 0,
+          currentGame: finalGame || session.currentGame,
+          scores: session.scores || {},
+          totalCorrect: typeof session.totalCorrect === "number" ? session.totalCorrect : (score || 0),
+          totalQuestions: typeof session.totalQuestions === "number" ? session.totalQuestions : (total || 0),
+          accuracyPercent: typeof session.accuracyPercent === "number" ? session.accuracyPercent : (total ? Math.round(((score || 0) / total) * 100) : 0),
+          totalXp: typeof session.totalXp === "number" ? session.totalXp : (xp || 0),
+          badge: session.badge || "",
+          completed: !!session.completed,
+          lastUpdated: Date.now(),
+        }
+      : {
+          sessionId: finalSessionId,
+          studentName: finalStudentName,
+          studentClass: finalClassName,
+          startTime: Date.now(),
+          currentGame: finalGame,
+          totalCorrect: score || 0,
+          totalQuestions: total || 0,
+          totalXp: xp || 0,
+          accuracyPercent: total ? Math.round(((score || 0) / total) * 100) : 0,
+          completed: false,
+          lastUpdated: Date.now(),
+        };
+
+    const sanitizedAnswers = Array.isArray(answers)
+      ? answers.map((ans: any, idx: number) => ({
+          eventId: ans.eventId || `${eventId || finalSessionId}_${ans.questionId || idx}_${ans.timestamp || idx}`,
+          sessionId: finalSessionId,
+          studentName: finalStudentName,
+          studentClass: finalClassName,
+          game: ans.game || finalGame,
+          questionId: String(ans.questionId || ""),
+          difficulty: Number(ans.difficulty) || 1,
+          concept: String(ans.concept || ""),
+          selectedOptionIds: Array.isArray(ans.selectedOptionIds) ? ans.selectedOptionIds : [String(ans.selectedOptionIds || "")],
+          correctAnswers: Array.isArray(ans.correctAnswers) ? ans.correctAnswers : [String(ans.correctAnswers || "")],
+          isCorrect: Boolean(ans.isCorrect),
+          timeSpentMs: Number(ans.timeSpentMs) || 0,
+          timestamp: ans.timestamp || Date.now(),
+        }))
+      : [];
+
+    const writeResult = await writeToGoogleSheet({
+      action: action || "saveGame",
+      eventId: eventId || "",
+      sessionId: finalSessionId,
+      session: sanitizedSession,
+      answers: sanitizedAnswers,
+    });
 
     res.json({
-      success: true,
-      forwardStatus,
-      sessionId: sessionId || (session && session.sessionId),
-      eventId,
+      success: writeResult.success,
+      persisted: writeResult.persisted,
+      sessionId: finalSessionId,
+      eventId: eventId || "",
+      persistedTo: writeResult.persisted ? "google_sheets" : "in_memory_fallback",
+      warning: writeResult.error || undefined,
     });
   } catch (error: any) {
+    console.log(`[SYNC_GAME_ERROR] message=${error?.message || "unknown"}`);
     res.status(500).json({ success: false, error: error?.message || "Internal server error" });
   }
 });
@@ -339,8 +572,12 @@ app.get("/api/teacher/questions", requireTeacherAuth, (req, res) => {
 });
 
 // 2. Student Results & Logs (Protected with Teacher Auth)
-app.get("/api/teacher/results", requireTeacherAuth, (req, res) => {
-  const sessionList = Object.values(inMemorySessions);
+app.get("/api/teacher/results", requireTeacherAuth, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store, max-age=0, must-revalidate");
+
+  const sheetData = await fetchGoogleSheetData();
+  const sessionList = sheetData.sessions;
+  const answerList = sheetData.answers;
 
   const googleSheetDirectUrl = cleanEnv(
     process.env.GOOGLE_SHEET_URL ||
@@ -348,43 +585,64 @@ app.get("/api/teacher/results", requireTeacherAuth, (req, res) => {
     process.env.SPREADSHEET_URL
   );
   const spreadsheetId = cleanEnv(process.env.GOOGLE_SPREADSHEET_ID);
+  const webhookUrl = getGoogleSheetWebhookUrl();
   const finalSheetUrl = googleSheetDirectUrl || (spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` : "");
-  const isConnected = !!(finalSheetUrl || process.env.GOOGLE_SHEET_MACRO_URL || process.env.APPS_SCRIPT_URL);
+  const isConnected = !!(finalSheetUrl || webhookUrl);
+
+  console.log(
+    `[TEACHER_RESULTS_LOADED] count=${sessionList.length} answersCount=${answerList.length} source=${sheetData.source}`
+  );
 
   res.json({
     success: true,
+    source: sheetData.source,
     totalSessions: sessionList.length,
-    totalLogs: inMemoryLogs.length,
+    totalLogs: answerList.length,
     sessions: sessionList,
-    recentLogs: inMemoryLogs.slice(-100),
+    recentLogs: answerList.slice(-100),
     googleSheet: {
       connected: isConnected,
-      url: finalSheetUrl || null,
+      url: finalSheetUrl || webhookUrl || null,
     },
+    fetchedAt: sheetData.fetchedAt,
   });
 });
 
 // 3. Aggregated Class & Game Statistics (Protected with Teacher Auth)
-app.get("/api/teacher/statistics", requireTeacherAuth, (req, res) => {
-  const sessionList = Object.values(inMemorySessions);
+app.get("/api/teacher/statistics", requireTeacherAuth, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store, max-age=0, must-revalidate");
+
+  const sheetData = await fetchGoogleSheetData();
+  const sessionList = sheetData.sessions;
+  const answerList = sheetData.answers;
+
   const totalPlays = sessionList.length;
-  const completedStudents = sessionList.filter((s) => s.completed || s.status === "completed").length;
-  const totalXpDistributed = sessionList.reduce((sum, s) => sum + (s.totalXp || 0), 0);
+  const completedStudents = sessionList.filter(
+    (s: any) => s.completed === true || s.completed === "HOÀN THÀNH" || s.status === "completed"
+  ).length;
+  const totalXpDistributed = sessionList.reduce(
+    (sum, s: any) => sum + (Number(s.totalXp) || 0),
+    0
+  );
   const avgAccuracy = totalPlays > 0
-    ? Math.round(sessionList.reduce((sum, s) => sum + (s.accuracyPercent || 0), 0) / totalPlays)
+    ? Math.round(
+        sessionList.reduce((sum, s: any) => sum + (Number(s.accuracyPercent) || 0), 0) / totalPlays
+      )
     : 0;
 
   // Group by Class
   const classMap: Record<string, { totalStudents: number; completedCount: number; sumAccuracy: number; sumXp: number }> = {};
-  sessionList.forEach((s) => {
-    const cls = s.studentClass || "Chưa phân lớp";
+  sessionList.forEach((s: any) => {
+    const cls = s.studentClass || s.className || "Chưa phân lớp";
     if (!classMap[cls]) {
       classMap[cls] = { totalStudents: 0, completedCount: 0, sumAccuracy: 0, sumXp: 0 };
     }
     classMap[cls].totalStudents += 1;
-    if (s.completed || s.status === "completed") classMap[cls].completedCount += 1;
-    classMap[cls].sumAccuracy += s.accuracyPercent || 0;
-    classMap[cls].sumXp += s.totalXp || 0;
+    if (s.completed === true || s.completed === "HOÀN THÀNH" || s.status === "completed") {
+      classMap[cls].completedCount += 1;
+    }
+    classMap[cls].sumAccuracy += Number(s.accuracyPercent) || 0;
+    classMap[cls].sumXp += Number(s.totalXp) || 0;
   });
 
   const classStats = Object.entries(classMap).map(([className, data]) => ({
@@ -405,12 +663,31 @@ app.get("/api/teacher/statistics", requireTeacherAuth, (req, res) => {
     boss: { title: "Đấu Trùm Quái Vật", attempts: 0, correct: 0 },
   };
 
-  inMemoryLogs.forEach((log) => {
-    if (log.game && gameMap[log.game]) {
-      gameMap[log.game].attempts += 1;
-      if (log.isCorrect) gameMap[log.game].correct += 1;
-    }
-  });
+  if (answerList && answerList.length > 0) {
+    answerList.forEach((log: any) => {
+      const g = (log.game || "").toLowerCase();
+      if (g && gameMap[g]) {
+        gameMap[g].attempts += 1;
+        if (log.isCorrect === true || log.isCorrect === "ĐÚNG") {
+          gameMap[g].correct += 1;
+        }
+      }
+    });
+  } else {
+    sessionList.forEach((s: any) => {
+      if (s.scores) {
+        Object.entries(s.scores).forEach(([gKey, scoreObj]: [string, any]) => {
+          const g = gKey.toLowerCase();
+          if (gameMap[g] && scoreObj) {
+            const correct = Number(scoreObj.correct) || 0;
+            const total = Number(scoreObj.total) || 0;
+            gameMap[g].attempts += total;
+            gameMap[g].correct += correct;
+          }
+        });
+      }
+    });
+  }
 
   const gameStats = Object.entries(gameMap).map(([gameId, data]) => ({
     gameId: gameId as any,
@@ -422,8 +699,9 @@ app.get("/api/teacher/statistics", requireTeacherAuth, (req, res) => {
 
   // Misconception Analysis
   const conceptErrors: Record<string, { conceptNameVi: string; totalErrors: number; sampleQId: string }> = {};
-  inMemoryLogs.forEach((log) => {
-    if (!log.isCorrect && log.concept) {
+  answerList.forEach((log: any) => {
+    const isWrong = log.isCorrect === false || log.isCorrect === "SAI";
+    if (isWrong && log.concept) {
       if (!conceptErrors[log.concept]) {
         conceptErrors[log.concept] = {
           conceptNameVi: log.concept,
@@ -450,8 +728,13 @@ app.get("/api/teacher/statistics", requireTeacherAuth, (req, res) => {
     .sort((a, b) => b.totalErrors - a.totalErrors)
     .slice(0, 5);
 
+  console.log(
+    `[TEACHER_STATISTICS_LOADED] totalPlays=${totalPlays} totalStudents=${classStats.reduce((sum, c) => sum + c.totalStudents, 0)} source=${sheetData.source}`
+  );
+
   res.json({
     success: true,
+    source: sheetData.source,
     stats: {
       totalPlays,
       completedStudents,
@@ -462,6 +745,7 @@ app.get("/api/teacher/statistics", requireTeacherAuth, (req, res) => {
       topMisconceptions,
       hardestQuestions: [],
     },
+    fetchedAt: sheetData.fetchedAt,
   });
 });
 

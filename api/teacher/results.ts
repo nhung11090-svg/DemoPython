@@ -1,7 +1,12 @@
-import { verifyTeacherSession, inMemorySessions, inMemoryLogs, getGoogleSheetConfig } from "../_lib/auth.js";
+import {
+  verifyTeacherSession,
+  fetchGoogleSheetData,
+  getGoogleSheetConfig,
+} from "../_lib/auth.js";
 
 export default async function handler(req: any, res: any) {
   res.setHeader("Content-Type", "application/json");
+  res.setHeader("Cache-Control", "no-store, max-age=0, must-revalidate");
 
   const session = verifyTeacherSession(req);
   if (!session) {
@@ -11,15 +16,24 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  const sessionList = Object.values(inMemorySessions);
+  // Đọc dữ liệu từ Google Sheets (Source of Truth)
+  const sheetData = await fetchGoogleSheetData();
+  const sessionList = sheetData.sessions;
+  const answerList = sheetData.answers;
   const googleSheet = getGoogleSheetConfig();
+
+  console.log(
+    `[TEACHER_RESULTS_LOADED] count=${sessionList.length} answersCount=${answerList.length} source=${sheetData.source}`
+  );
 
   return res.status(200).json({
     success: true,
+    source: sheetData.source,
     totalSessions: sessionList.length,
-    totalLogs: inMemoryLogs.length,
+    totalLogs: answerList.length,
     sessions: sessionList,
-    recentLogs: inMemoryLogs.slice(-100),
+    recentLogs: answerList.slice(-100),
     googleSheet,
+    fetchedAt: sheetData.fetchedAt,
   });
 }
