@@ -20,15 +20,19 @@ import { CLASS_OPTIONS } from '../../config/gameConfig';
 export const TeacherResultsTable: React.FC = () => {
   const [sessions, setSessions] = useState<StudentSession[]>([]);
   const [loading, setLoading] = useState(true);
+  const [openingSheet, setOpeningSheet] = useState(false);
   const [error, setError] = useState('');
+  const [sheetFeedback, setSheetFeedback] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedClass, setSelectedClass] = useState<string>('all');
   const [selectedSession, setSelectedSession] = useState<StudentSession | null>(null);
   const [googleSheetInfo, setGoogleSheetInfo] = useState<{
     connected: boolean;
+    hasDirectUrl: boolean;
     url: string | null;
   }>({
     connected: false,
+    hasDirectUrl: false,
     url: null,
   });
 
@@ -49,6 +53,7 @@ export const TeacherResultsTable: React.FC = () => {
       if (data.googleSheet) {
         setGoogleSheetInfo({
           connected: !!data.googleSheet.connected,
+          hasDirectUrl: !!(data.googleSheet.hasDirectUrl || data.googleSheet.url),
           url: data.googleSheet.url || null,
         });
       }
@@ -69,9 +74,44 @@ export const TeacherResultsTable: React.FC = () => {
     return matchName && matchClass;
   });
 
-  const handleOpenGoogleSheet = () => {
-    if (googleSheetInfo.url) {
-      window.open(googleSheetInfo.url, '_blank', 'noopener,noreferrer');
+  const handleOpenGoogleSheet = async () => {
+    setOpeningSheet(true);
+    setSheetFeedback(null);
+
+    try {
+      const res = await teacherFetch('/api/teacher/google-sheet-url');
+      if (!res.ok) {
+        throw new Error('Không thể xác thực quyền truy cập giáo viên.');
+      }
+      const data = await res.json();
+
+      if (!data.configured || !data.url) {
+        setSheetFeedback(data.message || 'Chưa cấu hình đường dẫn Google Sheet');
+        return;
+      }
+
+      const targetUrl = String(data.url).trim();
+
+      // Strict URL verification: domain docs.google.com and path contains spreadsheets/d/
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(targetUrl);
+      } catch {
+        setSheetFeedback('URL Google Sheet không hợp lệ.');
+        return;
+      }
+
+      if (parsedUrl.hostname !== 'docs.google.com' || !parsedUrl.pathname.includes('spreadsheets/d/')) {
+        setSheetFeedback('URL không đúng định dạng Google Spreadsheet (cần có docs.google.com/spreadsheets/d/...).');
+        return;
+      }
+
+      // Open strictly in a new tab without altering current location or history
+      window.open(targetUrl, '_blank', 'noopener,noreferrer');
+    } catch (err: any) {
+      setSheetFeedback(err?.message || 'Lỗi khi lấy đường dẫn Google Sheet.');
+    } finally {
+      setOpeningSheet(false);
     }
   };
 
@@ -156,31 +196,52 @@ export const TeacherResultsTable: React.FC = () => {
           </button>
 
           {/* MỞ GOOGLE SHEET BUTTON */}
-          {googleSheetInfo.connected && googleSheetInfo.url ? (
+          {googleSheetInfo.hasDirectUrl || googleSheetInfo.url ? (
             <button
               onClick={handleOpenGoogleSheet}
-              className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-lg shadow-teal-600/20 cursor-pointer active:scale-[0.99]"
-              title="Mở bảng tính Google Sheets lưu trữ kết quả học sinh trong tab mới"
+              disabled={openingSheet}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-lg shadow-teal-600/20 cursor-pointer active:scale-[0.99]"
+              title="Mở file Google Sheet thật trong tab mới"
             >
-              <Table className="w-3.5 h-3.5" />
+              {openingSheet ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Table className="w-3.5 h-3.5" />
+              )}
               <span>📊 MỞ GOOGLE SHEET</span>
               <ExternalLink className="w-3 h-3 ml-0.5 opacity-80" />
             </button>
           ) : (
             <button
               disabled
-              title="Google Sheet chưa được kết nối. Hãy cấu hình GOOGLE_SHEET_URL trong biến môi trường server."
+              title="Chưa cấu hình đường dẫn Google Sheet (biến môi trường GOOGLE_SHEET_URL)"
               className="px-4 py-2 rounded-xl bg-slate-800/80 border border-slate-700/60 text-slate-500 text-xs font-bold flex items-center gap-1.5 cursor-not-allowed opacity-60"
             >
               <Table className="w-3.5 h-3.5" />
               <span>📊 MỞ GOOGLE SHEET</span>
-              <span className="text-[10px] text-slate-400 font-normal italic">
-                (Google Sheet chưa được kết nối)
+              <span className="text-[10px] text-amber-400/80 font-normal italic">
+                (Chưa cấu hình đường dẫn Google Sheet)
               </span>
             </button>
           )}
         </div>
       </div>
+
+      {/* Optional Feedback Alert if error occurred while opening */}
+      {sheetFeedback && (
+        <div className="p-3 rounded-xl bg-amber-950/60 border border-amber-500/40 text-amber-300 text-xs flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className="font-bold">⚠️ Thông báo Google Sheet:</span>
+            <span>{sheetFeedback}</span>
+          </div>
+          <button
+            onClick={() => setSheetFeedback(null)}
+            className="text-amber-400 hover:text-amber-200 font-bold px-2 py-0.5 text-xs rounded hover:bg-amber-900/50"
+          >
+            Đóng
+          </button>
+        </div>
+      )}
 
       {/* Filter and Search Bar */}
       <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 bg-slate-900/90 border border-slate-800 p-4 rounded-2xl">

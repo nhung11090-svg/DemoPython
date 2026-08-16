@@ -3,16 +3,13 @@ import { TeacherUser } from '../types';
 import { TeacherDashboard } from '../components/teacher/TeacherDashboard';
 import { TeacherResultsTable } from '../components/teacher/TeacherResultsTable';
 import { TeacherQuestionBank } from '../components/teacher/TeacherQuestionBank';
-import { TeacherConcurrencyTest } from '../components/teacher/TeacherConcurrencyTest';
 import {
   LayoutDashboard,
   Users,
   BookOpen,
-  Activity,
   LogOut,
   ShieldCheck,
   GraduationCap,
-  Sparkles,
 } from 'lucide-react';
 
 interface TeacherLayoutProps {
@@ -82,7 +79,6 @@ export const TeacherLayout: React.FC<TeacherLayoutProps> = ({
             { id: 'overview', label: 'Tổng quan', icon: LayoutDashboard },
             { id: 'results', label: 'Kết quả học sinh', icon: Users },
             { id: 'questions', label: 'Ngân hàng 200 câu hỏi', icon: BookOpen },
-            { id: 'concurrency', label: 'Kiểm tra 50 học sinh', icon: Activity },
           ].map((tab) => {
             const Icon = tab.icon;
             const isActive = currentTab === tab.id;
@@ -109,7 +105,6 @@ export const TeacherLayout: React.FC<TeacherLayoutProps> = ({
         {currentTab === 'overview' && <TeacherDashboard onNavigateTab={onSelectTab} />}
         {currentTab === 'results' && <TeacherResultsTable />}
         {currentTab === 'questions' && <TeacherQuestionBank />}
-        {currentTab === 'concurrency' && <TeacherConcurrencyTest />}
       </main>
 
       {/* Footer */}

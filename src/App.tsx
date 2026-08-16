@@ -25,9 +25,7 @@ export function App() {
       setTeacherTab('questions');
     } else if (currentPath.startsWith('/teacher/results')) {
       setTeacherTab('results');
-    } else if (currentPath.startsWith('/teacher/concurrency') || currentPath.startsWith('/teacher/qa')) {
-      setTeacherTab('concurrency');
-    } else if (currentPath === '/teacher' || currentPath === '/teacher/overview') {
+    } else if (currentPath === '/teacher' || currentPath === '/teacher/overview' || currentPath.startsWith('/teacher/concurrency')) {
       setTeacherTab('overview');
     }
   }, [currentPath]);

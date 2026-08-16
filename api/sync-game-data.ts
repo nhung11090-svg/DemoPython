@@ -89,18 +89,28 @@ export default async function handler(req: any, res: any) {
       answers: sanitizedAnswers,
     });
 
+    if (!writeResult.persisted || !writeResult.success) {
+      return res.status(502).json({
+        success: false,
+        persisted: false,
+        sessionId: finalSessionId,
+        eventId: eventId || "",
+        error: writeResult.error || "Ghi dữ liệu vào Google Sheets thất bại.",
+      });
+    }
+
     return res.status(200).json({
-      success: writeResult.success,
-      persisted: writeResult.persisted,
+      success: true,
+      persisted: true,
       sessionId: finalSessionId,
       eventId: eventId || "",
-      persistedTo: writeResult.persisted ? "google_sheets" : "in_memory_fallback",
-      warning: writeResult.error || undefined,
+      persistedTo: "google_sheets",
     });
   } catch (error: any) {
     console.log(`[SYNC_GAME_ERROR] message=${error?.message || "unknown"}`);
     return res.status(500).json({
       success: false,
+      persisted: false,
       error: error?.message || "Internal server error during game sync",
     });
   }

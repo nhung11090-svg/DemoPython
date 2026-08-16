@@ -1,60 +1,125 @@
 /**
- * HÀNH TRÌNH PYTHON - GOOGLE APPS SCRIPT WEB APP
+ * HÀNH TRÌNH PYTHON - GOOGLE APPS SCRIPT WEB APP (v3.0 Production)
  * Hệ thống thu thập, lưu trữ và đồng bộ dữ liệu thời gian thực giữa Học sinh và Giáo viên.
- * Hỗ trợ LockService, Batch Writing, Deduplication (SessionID & EventID), và Đọc dữ liệu (doGet/doPost).
+ * Hỗ trợ: LockService, Batch Writing, Deduplication (SessionID & EventID), Secret Auth, và Auto-setup.
  */
 
+// =========================================================================
+// 1. HÀM KHỞI TẠO BẢNG TÍNH THỦ CÔNG HOẶC TỰ ĐỘNG (setupSpreadsheet)
+// =========================================================================
+function setupSpreadsheet() {
+  var ss = getTargetSpreadsheet();
+  
+  // 1. Tạo hoặc lấy Sheet SESSIONS
+  var sessionSheet = ss.getSheetByName("SESSIONS");
+  if (!sessionSheet) {
+    sessionSheet = ss.insertSheet("SESSIONS");
+  }
+  var sessionHeaders = [
+    "Timestamp", "SessionID", "StudentName", "Class", "StartTime", "EndTime", "DurationSeconds",
+    "PredictScore", "VariableScore", "BugScore", "IfScore", "BuilderScore", "BossScore",
+    "CorrectAnswers", "TotalQuestions", "AccuracyPercent", "TotalXP", "Badge", "Completed"
+  ];
+  sessionSheet.getRange(1, 1, 1, sessionHeaders.length).setValues([sessionHeaders]);
+  sessionSheet.getRange(1, 1, 1, sessionHeaders.length)
+    .setFontWeight("bold")
+    .setBackground("#0f172a")
+    .setFontColor("#38bdf8")
+    .setHorizontalAlignment("center");
+  sessionSheet.setFrozenRows(1);
+
+  // 2. Tạo hoặc lấy Sheet ANSWERS
+  var answersSheet = ss.getSheetByName("ANSWERS");
+  if (!answersSheet) {
+    answersSheet = ss.insertSheet("ANSWERS");
+  }
+  var answerHeaders = [
+    "Timestamp", "EventID", "SessionID", "StudentName", "Class", "Game",
+    "QuestionID", "Difficulty", "Concept", "SelectedAnswer", "CorrectAnswer",
+    "IsCorrect", "TimeSpentSeconds"
+  ];
+  answersSheet.getRange(1, 1, 1, answerHeaders.length).setValues([answerHeaders]);
+  answersSheet.getRange(1, 1, 1, answerHeaders.length)
+    .setFontWeight("bold")
+    .setBackground("#022c22")
+    .setFontColor("#34d399")
+    .setHorizontalAlignment("center");
+  answersSheet.setFrozenRows(1);
+
+  Logger.log("✅ Đã khởi tạo thành công 2 sheet SESSIONS và ANSWERS.");
+  return "Đã khởi tạo thành công 2 sheet: SESSIONS và ANSWERS.";
+}
+
+// =========================================================================
+// 2. XỬ LÝ POST REQUEST (/api/sync-game-data và Teacher Read)
+// =========================================================================
 function doPost(e) {
   var payload;
   try {
-    payload = JSON.parse(e.postData.contents);
+    if (e && e.postData && e.postData.contents) {
+      payload = JSON.parse(e.postData.contents);
+    } else if (e && e.parameter && e.parameter.payload) {
+      payload = JSON.parse(e.parameter.payload);
+    } else if (e && e.parameter) {
+      payload = e.parameter;
+    } else {
+      payload = {};
+    }
   } catch (err) {
-    return ContentService.createTextOutput(JSON.stringify({
+    return jsonResponse({
       status: "error",
-      message: "Invalid JSON format: " + err.toString()
-    })).setMimeType(ContentService.MimeType.JSON);
+      success: false,
+      persisted: false,
+      message: "Invalid JSON payload: " + err.toString()
+    });
+  }
+
+  // Kiểm tra Secret nếu có cấu hình trong Script Properties
+  if (!validateSecret(payload)) {
+    return jsonResponse({
+      status: "error",
+      success: false,
+      persisted: false,
+      message: "Unauthorized: Webhook Secret không khớp với Script Properties."
+    });
   }
 
   var action = payload.action || "saveGame";
 
-  // 1. Hỗ trợ đọc dữ liệu qua POST (dành cho Teacher Dashboard)
+  // 2.1 Hỗ trợ đọc dữ liệu qua POST (dành cho Teacher Dashboard)
   if (action === "readData" || action === "getResults" || action === "getStats") {
-    return handleReadData();
+    return handleReadData(payload);
   }
 
-  // 2. Ghi dữ liệu học sinh
+  // 2.2 Ghi dữ liệu kết quả học sinh
   var eventId = payload.eventId || "";
   var sessionId = payload.sessionId || (payload.session && payload.session.sessionId) || "";
   var session = payload.session;
   var answers = payload.answers || [];
 
   if (!sessionId) {
-    return ContentService.createTextOutput(JSON.stringify({
+    return jsonResponse({
       status: "error",
-      message: "Missing sessionId"
-    })).setMimeType(ContentService.MimeType.JSON);
+      success: false,
+      persisted: false,
+      message: "Missing required parameter: sessionId is mandatory."
+    });
   }
 
   var lock = LockService.getScriptLock();
   try {
-    // Chờ tối đa 20 giây để lấy khóa ghi (xử lý tranh chấp 30-50 máy học sinh)
-    lock.waitLock(20000);
+    // Chờ tối đa 30 giây để lấy khóa ghi an toàn (chống xung đột đồng thời)
+    lock.waitLock(30000);
 
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var ss = getTargetSpreadsheet(payload);
 
     // ----------------------------------------------------
     // TAB 1: SESSIONS (Dữ liệu tổng hợp từng học sinh)
     // ----------------------------------------------------
     var sessionSheet = ss.getSheetByName("SESSIONS");
     if (!sessionSheet) {
-      sessionSheet = ss.insertSheet("SESSIONS");
-      var sessionHeaders = [
-        "Timestamp", "SessionID", "StudentName", "Class", "StartTime", "EndTime", "DurationSeconds",
-        "PredictScore", "VariableScore", "BugScore", "IfScore", "BuilderScore", "BossScore",
-        "CorrectAnswers", "TotalQuestions", "AccuracyPercent", "TotalXP", "Badge", "Completed"
-      ];
-      sessionSheet.appendRow(sessionHeaders);
-      sessionSheet.getRange("A1:S1").setFontWeight("bold").setBackground("#0f172a").setFontColor("#38bdf8");
+      setupSpreadsheet();
+      sessionSheet = ss.getSheetByName("SESSIONS");
     }
 
     if (session) {
@@ -67,7 +132,7 @@ function doPost(e) {
         timeFormatted,
         session.sessionId || sessionId,
         session.studentName || "",
-        session.studentClass || "",
+        session.studentClass || session.className || "",
         Utilities.formatDate(sDate, "GMT+7", "dd/MM/yyyy HH:mm:ss"),
         session.endTime ? Utilities.formatDate(eDate, "GMT+7", "dd/MM/yyyy HH:mm:ss") : "",
         durationSec,
@@ -85,14 +150,13 @@ function doPost(e) {
         session.completed ? "HOÀN THÀNH" : "ĐANG CHƠI"
       ];
 
-      // Kiểm tra xem SessionID đã tồn tại chưa để UPDATE (Chống ghi đè tạo dòng rác)
       var lastRow = sessionSheet.getLastRow();
       var existingRowIndex = -1;
 
       if (lastRow > 1) {
         var sessionIds = sessionSheet.getRange(2, 2, lastRow - 1, 1).getValues();
         for (var i = 0; i < sessionIds.length; i++) {
-          if (String(sessionIds[i][0]) === String(sessionId)) {
+          if (String(sessionIds[i][0]).trim() === String(sessionId).trim()) {
             existingRowIndex = i + 2;
             break;
           }
@@ -109,29 +173,23 @@ function doPost(e) {
     // ----------------------------------------------------
     // TAB 2: ANSWERS (Chi tiết từng câu hỏi làm bài)
     // ----------------------------------------------------
+    var savedAnswersCount = 0;
     if (answers && answers.length > 0) {
       var answersSheet = ss.getSheetByName("ANSWERS");
       if (!answersSheet) {
-        answersSheet = ss.insertSheet("ANSWERS");
-        var answerHeaders = [
-          "Timestamp", "EventID", "SessionID", "StudentName", "Class", "Game",
-          "QuestionID", "Difficulty", "Concept", "SelectedAnswer", "CorrectAnswer",
-          "IsCorrect", "TimeSpentSeconds"
-        ];
-        answersSheet.appendRow(answerHeaders);
-        answersSheet.getRange("A1:M1").setFontWeight("bold").setBackground("#022c22").setFontColor("#34d399");
+        setupSpreadsheet();
+        answersSheet = ss.getSheetByName("ANSWERS");
       }
 
-      // Đọc các EventID gần đây để tránh ghi trùng (khi client retry)
       var ansLastRow = answersSheet.getLastRow();
       var recordedEventIds = {};
       if (ansLastRow > 1) {
-        var checkRows = Math.min(300, ansLastRow - 1);
+        var checkRows = Math.min(500, ansLastRow - 1);
         var startCheck = ansLastRow - checkRows + 1;
         var existingEventIds = answersSheet.getRange(startCheck, 2, checkRows, 1).getValues();
         for (var k = 0; k < existingEventIds.length; k++) {
           if (existingEventIds[k][0]) {
-            recordedEventIds[String(existingEventIds[k][0])] = true;
+            recordedEventIds[String(existingEventIds[k][0]).trim()] = true;
           }
         }
       }
@@ -141,8 +199,8 @@ function doPost(e) {
         var a = answers[j];
         var itemEventId = a.eventId || (eventId ? eventId + "_" + j : sessionId + "_" + a.questionId + "_" + (a.timestamp || j));
 
-        if (recordedEventIds[itemEventId]) {
-          continue; // Đã lưu trước đó, bỏ qua
+        if (recordedEventIds[String(itemEventId).trim()]) {
+          continue; // Đã lưu trước đó, bỏ qua deduplication
         }
 
         var ansTime = Utilities.formatDate(new Date(a.timestamp || Date.now()), "GMT+7", "dd/MM/yyyy HH:mm:ss");
@@ -151,7 +209,7 @@ function doPost(e) {
           itemEventId,
           a.sessionId || sessionId,
           a.studentName || (session ? session.studentName : ""),
-          a.studentClass || (session ? session.studentClass : ""),
+          a.studentClass || a.className || (session ? (session.studentClass || session.className) : ""),
           a.game || "",
           a.questionId || "",
           a.difficulty || 1,
@@ -163,59 +221,67 @@ function doPost(e) {
         ]);
       }
 
-      // Ghi Batch hàng loạt
       if (rowsToInsert.length > 0) {
         var targetStartRow = answersSheet.getLastRow() + 1;
         answersSheet.getRange(targetStartRow, 1, rowsToInsert.length, rowsToInsert[0].length).setValues(rowsToInsert);
+        savedAnswersCount = rowsToInsert.length;
       }
     }
 
-    return ContentService.createTextOutput(JSON.stringify({
+    return jsonResponse({
       status: "success",
+      success: true,
       persisted: true,
       sessionId: sessionId,
       eventId: eventId,
-      answersSaved: answers ? answers.length : 0
-    })).setMimeType(ContentService.MimeType.JSON);
+      answersSaved: savedAnswersCount
+    });
 
   } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({
+    return jsonResponse({
       status: "error",
+      success: false,
       persisted: false,
-      message: "Lỗi xử lý bảng tính: " + error.toString()
-    })).setMimeType(ContentService.MimeType.JSON);
+      message: "Lỗi ghi Google Sheets: " + error.toString()
+    });
   } finally {
-    lock.releaseLock();
+    try {
+      lock.releaseLock();
+    } catch (e) {}
   }
 }
 
-/**
- * Hỗ trợ GET request: Đọc dữ liệu từ SESSIONS & ANSWERS
- */
+// =========================================================================
+// 3. XỬ LÝ GET REQUEST (/api/teacher/results và Đọc dữ liệu)
+// =========================================================================
 function doGet(e) {
-  return handleReadData();
+  var param = (e && e.parameter) ? e.parameter : {};
+  if (param.action === "setup") {
+    var setupMsg = setupSpreadsheet();
+    return jsonResponse({ status: "success", success: true, message: setupMsg });
+  }
+  return handleReadData(param);
 }
 
-/**
- * Hàm đọc toàn bộ dữ liệu từ Sheet chuyển thành JSON chuẩn cho Teacher APIs
- */
-function handleReadData() {
+// =========================================================================
+// 4. HÀM ĐỌC DỮ LIỆU TỪ SESSIONS VÀ ANSWERS CHO TEACHER DASHBOARD
+// =========================================================================
+function handleReadData(payload) {
   try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var ss = getTargetSpreadsheet(payload);
     var sessionSheet = ss.getSheetByName("SESSIONS");
     var answersSheet = ss.getSheetByName("ANSWERS");
 
     var sessions = [];
     var answers = [];
 
-    // 1. Đọc danh sách SESSIONS
+    // 1. Đọc SESSIONS
     if (sessionSheet && sessionSheet.getLastRow() > 1) {
       var sRows = sessionSheet.getRange(2, 1, sessionSheet.getLastRow() - 1, sessionSheet.getLastColumn()).getValues();
       for (var i = 0; i < sRows.length; i++) {
         var r = sRows[i];
-        if (!r[1]) continue; // Thiếu sessionId thì bỏ qua
+        if (!r[1]) continue;
 
-        // Parse scores
         function parseScorePair(str) {
           if (!str) return { correct: 0, total: 0 };
           var parts = String(str).split("/");
@@ -253,12 +319,12 @@ function handleReadData() {
       }
     }
 
-    // 2. Đọc danh sách ANSWERS
+    // 2. Đọc ANSWERS
     if (answersSheet && answersSheet.getLastRow() > 1) {
       var aRows = answersSheet.getRange(2, 1, answersSheet.getLastRow() - 1, answersSheet.getLastColumn()).getValues();
       for (var j = 0; j < aRows.length; j++) {
         var ar = aRows[j];
-        if (!ar[2]) continue; // Thiếu sessionId
+        if (!ar[2]) continue;
 
         answers.push({
           timestamp: ar[0],
@@ -278,19 +344,70 @@ function handleReadData() {
       }
     }
 
-    return ContentService.createTextOutput(JSON.stringify({
+    return jsonResponse({
       status: "success",
+      success: true,
       totalSessions: sessions.length,
       totalAnswers: answers.length,
       sessions: sessions,
       answers: answers,
       fetchedAt: new Date().toISOString()
-    })).setMimeType(ContentService.MimeType.JSON);
+    });
 
   } catch (err) {
-    return ContentService.createTextOutput(JSON.stringify({
+    return jsonResponse({
       status: "error",
+      success: false,
       message: "Lỗi đọc dữ liệu Google Sheets: " + err.toString()
-    })).setMimeType(ContentService.MimeType.JSON);
+    });
   }
+}
+
+// =========================================================================
+// 5. HELPER FUNCTIONS
+// =========================================================================
+function getTargetSpreadsheet(payload) {
+  // 1. Container-bound spreadsheet (nếu Script tạo từ Tiện ích mở rộng > Apps Script)
+  try {
+    var activeSs = SpreadsheetApp.getActiveSpreadsheet();
+    if (activeSs) return activeSs;
+  } catch (e) {}
+
+  // 2. Script Property SPREADSHEET_ID hoặc GOOGLE_SPREADSHEET_ID
+  var scriptProps = PropertiesService.getScriptProperties();
+  var sheetId = scriptProps.getProperty("SPREADSHEET_ID") || 
+                 scriptProps.getProperty("GOOGLE_SPREADSHEET_ID") || 
+                 scriptProps.getProperty("SHEET_ID");
+  
+  if (!sheetId && payload && payload.spreadsheetId) {
+    sheetId = payload.spreadsheetId;
+  }
+
+  if (sheetId) {
+    try {
+      return SpreadsheetApp.openById(String(sheetId).trim());
+    } catch (e) {
+      throw new Error("Không thể mở Spreadsheet theo SPREADSHEET_ID='" + sheetId + "': " + e.toString());
+    }
+  }
+
+  throw new Error("Không tìm thấy Google Spreadsheet! Hãy tạo Apps Script từ menu 'Tiện ích mở rộng' > 'Apps Script' trong Google Sheet, hoặc vào Apps Script Project Settings thêm Script Property 'SPREADSHEET_ID'.");
+}
+
+function validateSecret(payload) {
+  var expected = PropertiesService.getScriptProperties().getProperty("WEBHOOK_SECRET") ||
+                 PropertiesService.getScriptProperties().getProperty("SECRET") ||
+                 PropertiesService.getScriptProperties().getProperty("GOOGLE_SHEETS_WEBHOOK_SECRET");
+  
+  if (!expected || String(expected).trim() === "") {
+    return true; // Không cấu hình secret -> cho phép
+  }
+
+  var provided = payload ? (payload.secret || payload.webhookSecret || payload.key) : "";
+  return String(provided || "").trim() === String(expected).trim();
+}
+
+function jsonResponse(data) {
+  return ContentService.createTextOutput(JSON.stringify(data))
+    .setMimeType(ContentService.MimeType.JSON);
 }
